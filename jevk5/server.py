@@ -5,8 +5,9 @@
         "questions": {"refund": {"type": "noul", "instructions": "Asks for money back?"}}}'
 
 Answers carry "noul" (probability of true) for yes/no questions and "probabilities" for choice
-and score questions, the shape JevBench's typesafe adapter reads. One GPU, one model: requests
-are served one at a time, each question as one CUDA-graph replay.
+and score questions, the shape JevBench's typesafe adapter reads. One model, one device:
+requests are served one at a time, each question as one CUDA-graph replay on a GPU, or one
+eager forward pass on CPU or MPS.
 """
 
 from __future__ import annotations
@@ -94,6 +95,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     model = JevK5(args.model)
     server = ThreadingHTTPServer((args.host, args.port), make_handler(model, args.model))
+    print(f"loaded {args.model} on {model.device}", flush=True)
     print(f"serving {args.model} on http://{args.host}:{args.port}/v1/systemone", flush=True)
     server.serve_forever()
     return 0

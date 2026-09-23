@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+- The runtime picks its device: cuda when a GPU is visible, else mps, else cpu. Before, it
+  required cuda and failed at load with "Found no NVIDIA driver on your system".
+- Off cuda, CUDA graphs are skipped and the model runs transformers' torch reference kernels
+  in place of the flash-linear-attention Triton kernels, which have no CPU path. Answers are
+  unchanged; latency is seconds per decision instead of milliseconds.
+- `jevk5-serve` logs the chosen device at startup.
+
 ## Correction, 2026-09-23
 
 JevBench's v1.4 scan noted that our hand-written calibration set

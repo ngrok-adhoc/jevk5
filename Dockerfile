@@ -3,7 +3,9 @@
 #   docker build -t jevk5 .
 #   docker run --gpus all -p 8090:8090 -v jevk5-hf:/data/hf jevk5
 #
-# Needs an NVIDIA GPU and the NVIDIA Container Toolkit on the host.
+# With an NVIDIA GPU and the NVIDIA Container Toolkit, a decision takes ~13 ms. Without
+# `--gpus` (or on a host with no GPU) the runtime picks CPU by itself and runs eagerly:
+# same answers, seconds per decision, ~9 GB of RAM. The startup log names the device.
 # The weights (~9 GB) download on first start into the /data/hf volume.
 
 FROM python:3.12-slim
@@ -17,12 +19,14 @@ ENV PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME=/data/hf
 
-# Install torch from the CUDA wheel index first so the jevk5 install reuses it.
+# Install torch from the CUDA wheel index first so the jevk5 install reuses it. The CUDA
+# wheel also runs on CPU, so one image serves both; the build cannot see the runtime host.
 RUN pip install --index-url https://download.pytorch.org/whl/cu128 "torch>=2.7"
 
 WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY jevk5 ./jevk5
+# [fast] adds flash-linear-attention for the GPU path; the runtime disables it off cuda.
 RUN pip install ".[fast]"
 
 VOLUME /data/hf

@@ -6,6 +6,10 @@ and a softmax over the answer letters' next-token logits. JevK5 adds weights dis
 thinking teacher, one calibration temperature, and a CUDA-graph runtime: one graph is recorded
 per padded input length and replayed, so a decision costs ~13 ms on an H100 instead of ~70 ms.
 
+The runtime picks the device itself: cuda when a GPU is visible, else mps, else cpu. CUDA
+graphs and the flash-linear-attention kernels run on cuda only; the other devices run the
+model eagerly with the torch reference kernels (correct, but seconds per decision).
+
     from jevk5 import JevK5
     model = JevK5("alibiserikbay/JevK5")
     model.decide("I was billed twice, please refund the duplicate.",
@@ -16,6 +20,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -69,26 +75,74 @@ def _load_temperature(source: str) -> float:
     return float(json.loads(path.read_text()).get("temperature", 1.0))
 
 
+def default_device(dtype=torch.bfloat16) -> str:
+    """cuda when a GPU is visible, else mps when it can hold a tensor of `dtype` (bf16 needs
+    macOS 14 or later), else cpu."""
+    if torch.cuda.is_available():
+        return "cuda"
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        try:
+            torch.zeros(1, dtype=dtype, device="mps")
+        except (RuntimeError, TypeError):
+            return "cpu"
+        return "mps"
+    return "cpu"
+
+
+KERNEL_FUNCTIONS = (
+    "causal_conv1d_fn",
+    "causal_conv1d_update",
+    "torch_chunk_gated_delta_rule",
+    "torch_recurrent_gated_delta_rule",
+)
+
+
+def _use_torch_kernels(model_cls: type) -> None:
+    """Rebind the model module's kernel functions to their torch reference implementations.
+
+    transformers wraps each reference function with `use_kernel_func_from_hub_with_fallback`,
+    which calls the Triton kernel from `fla` or `causal_conv1d` whenever that package imports,
+    with no device check. fla has no CPU or MPS path. The wrapper keeps the reference function
+    in `__wrapped__`, and the layers call these names as module globals, so rebinding the
+    module attribute is enough and does not depend on import order. The rebinding is
+    module-wide: a later cuda model in the same process also runs the reference kernels."""
+    module = sys.modules[model_cls.__module__]
+    for name in KERNEL_FUNCTIONS:
+        function = getattr(module, name, None)
+        if function is None:
+            continue
+        while hasattr(function, "__wrapped__"):
+            function = function.__wrapped__
+        if function.__module__ != module.__name__:
+            warnings.warn(f"{name} has no torch reference in {module.__name__}", stacklevel=2)
+            continue
+        setattr(module, name, function)
+
+
 class JevK5:
     def __init__(
         self,
         source: str = "alibiserikbay/JevK5",
-        device: str = "cuda",
+        device: str | None = None,
         dtype=torch.bfloat16,
         graphs: bool = True,
         temperature: float | None = None,
     ) -> None:
         import transformers
 
+        self.device = device or default_device(dtype)
+        self.cuda = torch.device(self.device).type == "cuda"
         config = transformers.AutoConfig.from_pretrained(source)
         self.tok = transformers.AutoTokenizer.from_pretrained(source)
         cls = transformers.AutoModelForCausalLM
         if config.model_type in {"qwen3_5", "qwen3_5_text"}:
             cls, config = transformers.Qwen3_5ForCausalLM, config.get_text_config()
+        if not self.cuda:
+            _use_torch_kernels(cls)
         self.model = cls.from_pretrained(
-            source, config=config, dtype=dtype, device_map={"": device}
+            source, config=config, dtype=dtype, device_map={"": self.device}
         ).eval()
-        self.device = device
         slots = [self.tok.encode(letter, add_special_tokens=False) for letter in LETTERS]
         if any(len(ids) != 1 for ids in slots):
             raise ValueError("Every answer letter must be one token")
@@ -96,7 +150,7 @@ class JevK5:
         self.slot_weight = self.model.lm_head.weight[self.slots].detach().contiguous()
         self.temperature = temperature if temperature is not None else _load_temperature(source)
         self.graphs: dict[int, tuple] = {}
-        if graphs and os.environ.get("JEVK5_GRAPHS", "1") != "0":
+        if graphs and self.cuda and os.environ.get("JEVK5_GRAPHS", "1") != "0":
             self.capture()
 
     def _slot_logits(self, ids: torch.Tensor, last: torch.Tensor) -> torch.Tensor:
@@ -107,6 +161,8 @@ class JevK5:
     def capture(self, lengths=GRAPH_LENGTHS) -> None:
         """Record one CUDA graph per padded length. Inputs are right-padded, which every
         (causal) layer keeps away from the last token, the only one read."""
+        if not self.cuda:
+            raise RuntimeError(f"CUDA graphs need a cuda device, not {self.device}")
         for n in lengths:
             ids = torch.zeros((1, n), dtype=torch.long, device=self.device)
             last = torch.full((1,), n - 1, dtype=torch.long, device=self.device)

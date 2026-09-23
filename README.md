@@ -4,7 +4,8 @@
 
 Give it a state (a ticket, a log, a policy, a diff) and typed questions: yes/no, choice, or score.
 It returns a probability for every option, with zero generated tokens, in about 13 ms on one
-GPU. It answers TypeSafe's `/v1/systemone` shape, so Jev-style clients can point at it.
+GPU. Without a GPU it picks CPU (or MPS) by itself and runs eagerly: same answers, seconds per
+decision. It answers TypeSafe's `/v1/systemone` shape, so Jev-style clients can point at it.
 
 **[JevBench v1.4](https://benchmarkheaven.com/jev-models) ranks JevK5 v0.2 second of 76 systems**,
 behind Jev 1.13.0 (63.29 against 62.04) and ahead of every other open system. Judge tier 0.945,
@@ -57,7 +58,7 @@ pip install "jevk5[fast] @ git+https://github.com/allebee/jevk5@v0.2.0"
 ```python
 from jevk5 import JevK5
 
-model = JevK5("alibiserikbay/JevK5")          # ~9 GB of GPU memory in bf16
+model = JevK5("alibiserikbay/JevK5")          # ~9 GB in bf16; cuda, else mps, else cpu
 model.decide(
     "Refunds need a receipt and a purchase within 30 days. "
     "The customer bought 12 days ago and has no receipt.",

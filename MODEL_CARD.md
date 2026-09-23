@@ -80,7 +80,8 @@ Distance to the exact gold distributions on the 10 public probability items: 0.1
 - The temperature is fitted on hard questions, so standard-tier answers are now underconfident
   (ECE 0.141 there, against 0.066 on the hard tier). JevBench scores calibration on the hard tier.
 - Judging answers slipped on the hard tier, 0.82 → 0.76 (one item of 17).
-- English only. Needs a CUDA GPU with ~9 GB for bf16. Inputs over 16,384 tokens are refused, not cut.
+- English only. Needs ~9 GB for bf16: on a CUDA GPU for the 13 ms path, or in RAM on CPU or MPS
+  for the eager path (seconds per decision). Inputs over 16,384 tokens are refused, not cut.
 
 ## Use
 
